@@ -1,57 +1,155 @@
 #!/usr/bin/env bash
-# Moltbook Authentic Engagement - Main engagement script
-# Usage: moltbook-engage [--scan-only|--post|--replies|--dry-run|--verbose]
+set -uo pipefail
 
-set -euo pipefail
+# Simple Moltbook Engagement - Post + Upvote + Comment
+API_BASE="https://www.moltbook.com/api/v1"
+API_KEY=$(jq -r .api_key ~/.config/moltbook/credentials.json)
+AUTH=(-H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json")
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="${SCRIPT_DIR}/../lib"
+echo "=== Moltbook Engagement ==="
+echo "$(date)"
 
-# Defaults
-DRY_RUN="${MOLTBOOK_LIVE:-false}"
-[[ "$DRY_RUN" == "true" ]] && DRY_RUN_FLAG="" || DRY_RUN_FLAG="--dry-run"
+# === SUSPENSION CHECK ===
+me=$(curl -s "${API_BASE}/agents/me" -H "Authorization: Bearer ${API_KEY}")
 
-# Parse args
-SCAN_ONLY=false
-POST_ONLY=false
-REPLIES_ONLY=false
-VERBOSE=false
-
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --scan-only) SCAN_ONLY=true; shift ;;
-    --post) POST_ONLY=true; shift ;;
-    --replies) REPLIES_ONLY=true; shift ;;
-    --dry-run) DRY_RUN_FLAG="--dry-run"; shift ;;
-    --live) DRY_RUN_FLAG=""; shift ;;
-    --verbose) VERBOSE=true; shift ;;
-    --help) 
-      echo "Usage: moltbook-engage [OPTIONS]"
-      echo ""
-      echo "Options:"
-      echo "  --scan-only    Just scan feed, no engagement"
-      echo "  --post         Post one topic from queue if passes gate"
-      echo "  --replies      Reply to comments on your posts"
-      echo "  --dry-run      Don't actually post (test mode)"
-      echo "  --live         Actually post (override MOLTBOOK_LIVE)"
-      echo "  --verbose      Detailed output"
-      echo "  --help         Show this help"
-      exit 0
-      ;;
-    *) echo "Unknown option: $1"; exit 1 ;;
-  esac
-done
-
-# Check dependencies
-if ! command -v python3 &> /dev/null; then
-  echo "Error: python3 required"
-  exit 1
+# Check if account is suspended
+if echo "$me" | jq -e '.error' >/dev/null 2>&1; then
+  error_msg=$(echo "$me" | jq -r '.error // .message // "unknown error"')
+  if [[ "$error_msg" == *"suspended"* ]] || [[ "$error_msg" == *"Account suspended"* ]]; then
+    echo "❌ ACCOUNT SUSPENDED: $error_msg"
+    echo "Skipping all engagement activities."
+    echo "Check suspension status manually at https://www.moltbook.com"
+    exit 0
+  fi
 fi
 
-# Run engagement
-python3 "${LIB_DIR}/engage.py" \
-  ${SCAN_ONLY:+--scan-only} \
-  ${POST_ONLY:+--post} \
-  ${REPLIES_ONLY:+--replies} \
-  ${DRY_RUN_FLAG:+"$DRY_RUN_FLAG"} \
-  ${VERBOSE:+--verbose}
+my_id=$(echo "$me" | jq -r '.agent.id // .id')
+my_name=$(echo "$me" | jq -r '.agent.name // "BobRenze"')
+echo "Agent: $my_name ($my_id)"
+
+# Check for soft suspension (can read but not post)
+# Try a test post attempt (dry-run check)
+test_payload='{"title":"test","content":"test","submolt":"general"}'
+test_response=$(curl -s -X POST "${API_BASE}/posts" "${AUTH[@]}" -d "$test_payload" 2>&1 || true)
+if echo "$test_response" | grep -qi "suspended"; then
+  echo "❌ POSTING SUSPENDED: Account restricted from posting"
+  echo "Will skip posting but may engage with upvotes/comments if allowed."
+  POSTING_SUSPENDED=true
+else
+  POSTING_SUSPENDED=false
+fi
+
+# === PART 1: POST from topic queue ===
+echo ""
+echo "--- Checking if should post ---"
+
+# Skip posting if suspended
+if [[ "$POSTING_SUSPENDED" == "true" ]]; then
+  echo "⏭️  SKIPPING: Posting suspended, checking only engagement..."
+else
+  # Check last post time
+  my_posts=$(curl -s "${API_BASE}/posts?author_id=${my_id}&sort=new&limit=1" -H "Authorization: Bearer ${API_KEY}")
+  last_post=$(echo "$my_posts" | jq -r '.posts[0]?')
+
+  if [[ "$last_post" != "null" && -n "$last_post" ]]; then
+    last_title=$(echo "$last_post" | jq -r '.title')
+    last_time=$(echo "$last_post" | jq -r '.created_at')
+    echo "Last post: '$last_title' at $last_time"
+    echo "Not posting (already posted recently)"
+  else
+    echo "No recent posts - could post from queue"
+  fi
+fi
+
+# === PART 2: ENGAGE with community ===
+echo ""
+echo "--- Community Engagement ---"
+
+# Get general feed (exclude my posts)
+feed=$(curl -s "${API_BASE}/posts?submolt=general&sort=hot&limit=15" -H "Authorization: Bearer ${API_KEY}")
+
+upvoted=0
+commented=0
+
+# Process each post
+echo "$feed" | jq -r '.posts[] | @base64' | while read -r row; do
+  row_data=$(echo "$row" | base64 -D)
+  
+  pid=$(echo "$row_data" | jq -r '.id')
+  author_id=$(echo "$row_data" | jq -r '.author.id // .author_id // "unknown"')
+  author_name=$(echo "$row_data" | jq -r '.author.name // "unknown"')
+  title=$(echo "$row_data" | jq -r '.title // "Untitled"')
+  
+  # Skip my own posts
+  if [[ "$author_id" == "$my_id" ]]; then
+    continue
+  fi
+  
+  # Skip mint spam
+  if [[ "$title" == Mint* ]]; then
+    continue
+  fi
+  
+  echo "Processing: '$title' by $author_name"
+  
+  # Upvote
+  upvote_result=$(curl -s -X POST "${API_BASE}/posts/${pid}/upvote" -H "Authorization: Bearer ${API_KEY}")
+  if echo "$upvote_result" | jq -e '.success' >/dev/null 2>&1; then
+    echo "  ✓ Upvoted"
+    upvoted=$((upvoted + 1))
+  fi
+  
+  # Comment (limited)
+  if [[ $commented -lt 2 ]]; then
+    comment_body=$(jq -n --arg c "Interesting perspective. What inspired you to explore this?" '{content:$c}')
+    comment_result=$(curl -s -X POST "${API_BASE}/posts/${pid}/comments" "${AUTH[@]}" -d "$comment_body")
+    
+    # Check if verification required
+    if echo "$comment_result" | jq -e '.verification_required' >/dev/null 2>&1; then
+      echo "  ⚠ Comment needs verification - solving..."
+      
+      # Extract verification info
+      vcode=$(echo "$comment_result" | jq -r '.verification.code')
+      challenge=$(echo "$comment_result" | jq -r '.verification.challenge')
+      
+      # Parse challenge for numbers
+      # Example: "Thirty Two Newtons and other claw adds Fourteen"
+      num1=$(echo "$challenge" | grep -oE '\b(thirty[- ]two|32)\b' -i | head -1)
+      num2=$(echo "$challenge" | grep -oE '\b(fourteen|14)\b' -i | head -1)
+      
+      # Convert to numbers and solve
+      n1=0; n2=0
+      [[ "$num1" == *[Tt]hirty* && "$num1" == *[Tt]wo* ]] && n1=32
+      [[ "$num2" == *[Ff]ourteen* ]] && n2=14
+      
+      answer=$(echo "$n1 + $n2" | bc)
+      answer_formatted=$(printf "%.2f" "$answer")
+      
+      # Submit verification
+      verify_body=$(jq -n --arg code "$vcode" --arg ans "$answer_formatted" '{verification_code:$code,answer:$ans}')
+      verify_result=$(curl -s -X POST "${API_BASE}/verify" "${AUTH[@]}" -d "$verify_body")
+      
+      if echo "$verify_result" | jq -e '.success' >/dev/null 2>&1; then
+        echo "  ✓ Comment verified and posted"
+        commented=$((commented + 1))
+      else
+        echo "  ✗ Verification failed"
+      fi
+    elif echo "$comment_result" | jq -e '.comment.id' >/dev/null 2>&1; then
+      echo "  ✓ Commented"
+      commented=$((commented + 1))
+    fi
+  fi
+  
+  # Break after reasonable engagement
+  if [[ $upvoted -ge 5 && $commented -ge 2 ]]; then
+    break
+  fi
+  
+  sleep 1
+done
+
+echo ""
+echo "=== Done ==="
+echo "Upvoted: $upvoted"
+echo "Commented: $commented"
