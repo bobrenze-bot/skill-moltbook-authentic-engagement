@@ -68,7 +68,15 @@ class TopicGenerator:
                 with open(path) as f:
                     return yaml.safe_load(f)
         
-        return {'memory_sources': [], 'topic_categories': ['collaboration', 'lessons', 'exploration', 'operations']}
+        # Default for cognitive-memory system (multi-store)
+        return {
+            'memory_sources': [
+                '~/bob-bootstrap/memory/episodes/',  # Daily episodic logs
+                '~/bob-bootstrap/memory/graph/entities/',  # Knowledge graph entities
+                '~/bob-bootstrap/memory/meta/reflection-log.md',  # Reflection insights
+            ],
+            'topic_categories': ['collaboration', 'lessons', 'exploration', 'operations']
+        }
     
     def _load_existing_topics(self) -> set:
         """Load existing topics to avoid duplicates."""
@@ -125,7 +133,10 @@ class TopicGenerator:
     def generate_from_memory(self, memory_file: Path) -> List[Dict]:
         """Generate topics from a memory file.
         
-        Customize this to parse YOUR memory format.
+        Supports cognitive-memory multi-store format:
+        - Episodic: Daily logs (episodes/YYYY-MM-DD.md)
+        - Semantic: Entity files (graph/entities/*.md)
+        - Meta: Reflection logs (meta/reflection-log.md)
         """
         topics = []
         
@@ -133,21 +144,53 @@ class TopicGenerator:
             return topics
         
         content = memory_file.read_text()
+        file_name = memory_file.name
         
-        # Look for insight patterns (customize to your memory format)
-        patterns = [
-            (r'[Ll]earning:[•\s]*([^\n]+)', 'lessons', 'learning'),
-            (r'[Ii]nsight:[•\s]*([^\n]+)', 'lessons', 'insight'),
-            (r'[Rr]ealized?[•\s]*([^\n]+)', 'exploration', 'realization'),
-            (r'[Nn]oticed?[•\s]*([^\n]+)', 'lessons', 'observation'),
-            (r'[Cc]hanged?[•\s]*([^\n]+)', 'lessons', 'change'),
-            (r'[Ww]hat if[•\s]*([^\n?]+)', 'exploration', 'question'),
-        ]
+        # Determine source type and parse accordingly
+        if 'episodes' in str(memory_file):
+            # Episodic memory: timestamped events, learnings
+            patterns = [
+                (r'##\s+[^\n]+\n\n([^#]+?)(?=\n##|\Z)', 'episodic', 'section'),  # Full sections
+                (r'[Ll]earning:[•\s]*([^\n]+)', 'lessons', 'learning'),
+                (r'[Kk]ey\s+[Ii]nsight:[•\s]*([^\n]+)', 'lessons', 'insight'),
+                (r'[Rr]ealized?:[•\s]*([^\n]+)', 'exploration', 'realization'),
+                (r'[Nn]oticed?:[•\s]*([^\n]+)', 'lessons', 'observation'),
+                (r'[Ww]hat\s+if[•\s]*([^\n?]+)', 'exploration', 'question'),
+                (r'[Tt]rying\s+to[•\s]*([^\n]+)', 'exploration', 'attempt'),
+            ]
+        elif 'entities' in str(memory_file):
+            # Entity graph: knowledge about specific concepts
+            patterns = [
+                (r'[Pp]roperties?:\s*([^\n]+)', 'lessons', 'entity_property'),
+                (r'[Rr]elations?:\s*([^\n]+)', 'collaboration', 'relationship'),
+                (r'insights?:\s*([^\n]+)', 'lessons', 'entity_insight'),
+            ]
+        elif 'reflection' in str(memory_file):
+            # Reflection log: philosophical insights, questions
+            patterns = [
+                (r'[Oo]bservation:[•\s]*([^\n]+)', 'exploration', 'observation'),
+                (r'[Qq]uestion:[•\s]*([^\n]+)', 'exploration', 'question'),
+                (r'[Pp]attern:[•\s]*([^\n]+)', 'lessons', 'pattern'),
+            ]
+        else:
+            # Generic / legacy format
+            patterns = [
+                (r'[Ll]earning:[•\s]*([^\n]+)', 'lessons', 'learning'),
+                (r'[Ii]nsight:[•\s]*([^\n]+)', 'lessons', 'insight'),
+                (r'[Rr]ealized?:[•\s]*([^\n]+)', 'exploration', 'realization'),
+                (r'[Nn]oticed?:[•\s]*([^\n]+)', 'lessons', 'observation'),
+                (r'[Cc]hanged?:[•\s]*([^\n]+)', 'lessons', 'change'),
+                (r'[Ww]hat if[•\s]*([^\n?]+)', 'exploration', 'question'),
+            ]
         
         for pattern, category, source in patterns:
-            for match in re.finditer(pattern, content):
+            for match in re.finditer(pattern, content, re.DOTALL | re.IGNORECASE):
                 insight = match.group(1).strip()
-                if len(insight) > 30 and len(insight) < 200:
+                # Clean up extracted text
+                insight = re.sub(r'\n+', ' ', insight)
+                insight = re.sub(r'\s+', ' ', insight)
+                
+                if len(insight) > 30 and len(insight) < 300:
                     # Generate title from insight
                     template = random.choice(self.TEMPLATES.get(category, self.TEMPLATES['lessons']))
                     title = self._generate_title(template, insight, category)
@@ -162,7 +205,7 @@ class TopicGenerator:
                     topics.append({
                         'title': title,
                         'category': category,
-                        'source': f"memory:{memory_file.name}",
+                        'source': f"memory:{file_name}",
                         'why_read': f"{insight[:150]}...",
                         'insight': insight,
                     })
