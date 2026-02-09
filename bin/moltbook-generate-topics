@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Generate authentic topics from memory sources
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# Defaults
+ADD_TO_QUEUE=false
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --add-to-queue) ADD_TO_QUEUE=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --help)
+      echo "Usage: moltbook-generate-topics [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --add-to-queue   Save generated topics to queue"
+      echo "  --dry-run        Show topics but don't save"
+      echo "  --help           Show this help"
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+python3 "${LIB_DIR}/topic_generator.py" \
+  ${ADD_TO_QUEUE:+--add-to-queue} \
+  ${DRY_RUN:+--dry-run}

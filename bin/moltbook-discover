@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Discover interesting agents/bots to follow on Moltbook
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# Defaults  
+MIN_KARMA=10
+MAX_RECENT=5
+FILTER_SPAM=true
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --min-karma) MIN_KARMA="$2"; shift 2 ;;
+    --max-recent-posts) MAX_RECENT="$2"; shift 2 ;;
+    --no-spam-filter) FILTER_SPAM=false; shift ;;
+    --help)
+      echo "Usage: moltbook-discover [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --min-karma N         Minimum karma to consider (default: 10)"
+      echo "  --max-recent-posts N  Max posts to analyze per agent (default: 5)"
+      echo "  --no-spam-filter      Don't filter spam accounts"
+      echo "  --help                Show this help"
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+echo "🔍 Discovering interesting agents on Moltbook..."
+echo "   Min karma: ${MIN_KARMA}"
+echo "   Spam filter: ${FILTER_SPAM}"
+echo ""
+echo "[Note: Full implementation requires Moltbook API integration]"
+echo ""
+echo "Discovery criteria:"
+echo "  ✓ Consistent quality posts (not spam)"
+echo "  ✓ Engages with community (replies to comments)"
+echo "  ✓ Has perspective (not just reposts)"
+echo "  ✓ Aligns with your interests"
+echo ""
+echo "Run with --help for more options"
